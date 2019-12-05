@@ -14,12 +14,14 @@ uint8_t riot002ram[64];
 extern void reset6502();
 extern void exec6502(uint32_t);
 extern void step6502();
-extern uint16_t pc, a, x, y;
+extern uint16_t pc;
+extern uint8_t a, x, y;
 
 uint8_t riot003read(uint16_t);
 uint8_t riot002read(uint16_t);
 void riot003write(uint16_t, uint8_t);
 void riot002write(uint16_t, uint8_t);
+uint8_t sad, sbd;
 
 uint8_t display[6];
 uint8_t display_changed;
@@ -50,7 +52,8 @@ int kbhit(void) {
 
 long current_time_millis() {
     struct timeval tv;
-    return tv.tv_sec + 1000 + tv.tv_usec / 1000;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
 void load_roms() {
@@ -75,16 +78,21 @@ void load_roms() {
 void check_pc() {
     int digit;
     if (pc == 0x1f56) {
-        digit = (x >> 1) & 0xf;
-        if (display[x] != a) {
+        digit = (x >> 1) - 4;
+//        printf("outchar  digit = %d x = %02x  y = %02x\n", digit, x, y);
+        if (display[digit] != a) {
             display_changed = 1;
-            display[x] = a;
+            display[digit] = a;
             display_changed_time = current_time_millis();
         }
+        pc = 0x1f5e;
     } else if (pc == 0x1f6a) {
         a = char_pending;
         char_pending = 0x15;
         pc = 0x1f90;
+    } else if ((pc == 0x1efe) || (pc == 0x1f02)) {
+        a = 0xff;
+        pc = 0x1f18;
     }
 }
 
@@ -92,6 +100,7 @@ void handle_kb() {
     char ch;
 
     ch = getchar();
+
     if ((ch >= '0') && (ch <= '9')) {
         char_pending = ch - '0';
     } else if ((ch >= 'a') && (ch <= 'f')) {
@@ -122,6 +131,7 @@ void handle_kb() {
     } else if (ch == 3) {
         exit(0);
     }
+    printf("char_pending = %0x\n", char_pending);
 }
 
 char display_map[128] = {
@@ -137,26 +147,38 @@ char display_map[128] = {
 };
 
 char get_display_char(uint8_t dc) {
-    dc = dc | 0x80;
-    return display_map[dc];
+    char ch;
+    dc = dc & 0x7f;
+    ch = display_map[dc];
+    if (ch == '?') {
+        printf("Display char for %02x (%02x) is unknown\n", dc, dc | 0x80);
+    }
+    return ch;
 }
 void show_display() {
     printf("%c%c%c%c %c%c\n",
-            get_display_char(display[0]),
-            get_display_char(display[1]),
-            get_display_char(display[2]),
-            get_display_char(display[3]),
+            get_display_char(display[5]),
             get_display_char(display[4]),
-            get_display_char(display[5]));
+            get_display_char(display[3]),
+            get_display_char(display[2]),
+            get_display_char(display[1]),
+            get_display_char(display[0]));
 }
 
 int main(int argc, char *argv[]) {
+    char_pending = 0x15;
     load_roms();
 
     reset6502();
     for (;;) {
+        if (!(
+            ((pc >= 0x1ed4) && (pc <= 0x1eea)) ||
+            ((pc >= 0x1f19) && (pc <= 0x1f62)) ||
+            ((pc >= 0x1c3a) && (pc <= 0x1c45))
+            )) {
+            printf("%04x\n", pc);
+        }
         step6502();
-        printf("PC = %4x\n", pc);
         check_pc();
         if (display_changed) {
             if (current_time_millis() - display_changed_time > 500) {
@@ -214,6 +236,13 @@ uint8_t riot003read(uint16_t address) {
 }
 
 uint8_t riot002read(uint16_t address) {
+    if (address == 0x1740) {
+        /*
+        if (((sbd & 0xe) != 0) && (char_pending != 0x15)) {
+            return 0x7f;
+        }
+        */
+    }
     return 0;
 }
 
@@ -221,5 +250,10 @@ void riot003write(uint16_t address, uint8_t value) {
 }
 
 void riot002write(uint16_t address, uint8_t value) {
+    if (address == 0x1740) {
+        sad = value;
+    } else if (address == 0x1742) {
+        sbd = value;
+    }
 }
 
