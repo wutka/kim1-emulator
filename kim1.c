@@ -11,9 +11,13 @@ uint8_t ram[1024];
 
 typedef struct TIMER {
     uint16_t timer_mult;
-    uint8_t tick_accum;
+    uint16_t tick_accum;
+    uint8_t start_value;
     uint8_t timer_count;
     uint8_t timeout;
+#ifdef REAL_TIMER
+    uint64_t starttime;
+#endif
 } TIMER;
 
 typedef struct RIOT {
@@ -35,8 +39,10 @@ extern volatile uint8_t a, x, y, status;
 extern volatile uint32_t clockticks6502;
 
 void load_roms();
-int kbhit();
+int kbhit(bool);
+int reset_term();
 long current_time_millis();
+void do_step();
 void check_pc();
 void handle_kb();
 void show_display();
@@ -45,7 +51,7 @@ uint8_t riot002read(uint16_t);
 void riot003write(uint16_t, uint8_t);
 void riot002write(uint16_t, uint8_t);
 void update_timer(TIMER *, uint32_t);
-void reset_timer(TIMER *, int);
+void reset_timer(TIMER *, int, uint8_t);
 void write6502(uint16_t, uint8_t);
 
 uint8_t display[6];
@@ -58,20 +64,32 @@ uint8_t single_step;
 
 struct timespec last_tick_time;
 
+char input_line[512];
+
 int main(int argc, char *argv[]) {
     uint32_t curr_ticks;
     struct timespec tv, nsleep;
 
+    // Initialize the RIOT chips
     memset(&riot002, 0, sizeof(RIOT));
     memset(&riot003, 0, sizeof(RIOT));
 
+    // No character pending
     char_pending = 0x15;
+
+    // Load the 2 ROM files
     load_roms();
+
+    // Set the vectors that the KIM-1 ROM uses
     write6502(0x17fa, 0);
     write6502(0x17fb, 0x1c);
     write6502(0x17fe, 0);
     write6502(0x17ff, 0x1c);
 
+    // Turn single step off
+    single_step = 0;
+
+    // Reset the CPU
     reset6502();
 
     clock_gettime(CLOCK_REALTIME, &last_tick_time);
@@ -81,6 +99,7 @@ int main(int argc, char *argv[]) {
 
 //        printf("pc=%04x  status=%02x  a=%02x  x=%02x  y=%02x\n", pc, status, a, x, y);
 
+        // Try to simulate a 1MHz clock speed
         clock_gettime(CLOCK_REALTIME, &tv);
         if (tv.tv_sec == last_tick_time.tv_sec) {
             if (tv.tv_nsec - last_tick_time.tv_nsec < 1000) {
@@ -89,17 +108,22 @@ int main(int argc, char *argv[]) {
                 nanosleep(&nsleep, NULL);
             }
         }
-        clockticks6502 = 0;
 
-        step6502();
+        if (!single_step) {
+            do_step();
+        } else {
+            // If single stepping, sleep a bit so we don't chew up the clock,
+            // it will take a while for the user to hit the step button again
+            nsleep.tv_sec = 0;
+            nsleep.tv_nsec = 10000000;
+            nanosleep(&nsleep, NULL);
+        }
 
-        clock_gettime(CLOCK_REALTIME, &last_tick_time);
-
-        update_timer(&riot002.timer, clockticks6502);
-        update_timer(&riot003.timer, clockticks6502);
-
+        // Check where the CPU is
         check_pc();
 
+        // If the display has changed, update it, but no faster than every 100ms
+        // since we don't need to see the result of every keystroke
         if (display_changed) {
             if (current_time_millis() - display_changed_time > 100) {
                 show_display();
@@ -107,17 +131,32 @@ int main(int argc, char *argv[]) {
                 display_changed = 0;
             }
         }
-        if (kbhit()) {
+        
+        // If a key has been hit, process it
+        if (kbhit(false)) {
             handle_kb();
         }
     }
 }
 
-int kbhit(void) {
+void do_step() {
+    // Reset the CPU tick count so we can get the number of ticks
+    // this instruction took
+    clockticks6502 = 0;
+    step6502();
+    clock_gettime(CLOCK_REALTIME, &last_tick_time);
+
+    // Update the 6530 timers
+    update_timer(&riot002.timer, clockticks6502);
+    update_timer(&riot003.timer, clockticks6502);
+}
+
+int kbhit(bool init) {
     static bool initflag = false;
     static const int STDIN = 0;
 
-    if (!initflag) {
+    // If raw mode hasn't been turned on yet, turn it on
+    if (init || !initflag) {
         // Use termios to turn off line buffering
         struct termios term;
         tcgetattr(STDIN, &term);
@@ -128,15 +167,35 @@ int kbhit(void) {
         initflag = true;
     }
 
+    // Return the number of bytes available to read
     int nbbytes;
     ioctl(STDIN, FIONREAD, &nbbytes);  // 0 is STDIN
     return nbbytes;
+}
+
+int reset_term() {
+    static const int STDIN = 0;
+
+    // Use termios to turn on line buffering
+    struct termios term;
+    tcgetattr(STDIN, &term);
+    term.c_lflag |= ICANON;
+    term.c_lflag |= ECHO;
+    tcsetattr(STDIN, TCSANOW, &term);
+    setbuf(stdin, NULL);
 }
 
 long current_time_millis() {
     struct timespec tv;
     clock_gettime(CLOCK_REALTIME, &tv);
     return tv.tv_sec * 1000 + tv.tv_nsec / 1000000;
+}
+
+uint64_t current_time_nanos() {
+    struct timespec tv;
+    uint64_t ct;
+    clock_gettime(CLOCK_REALTIME, &tv);
+    return tv.tv_sec * 1000000000 + tv.tv_nsec;
 }
 
 void load_roms() {
@@ -158,23 +217,34 @@ void load_roms() {
 
 }
 
+/* check_pc is a hack to make the simulator a little smoother.
+ * It traps the call to display digits, but only late into the
+ * processing so programs like Wumpus that display non-standard
+ * values can still work. */
 void check_pc() {
     int digit;
     if (pc == 0x1f56) {
         digit = 9 - (x >> 1);
         if (display[digit] != a) {
+            if (!display_changed) {
+                display_changed_time = current_time_millis();
+            }
             display_changed = 1;
             display[digit] = a;
-            display_changed_time = current_time_millis();
         }
         pc = 0x1f5e;
     } else if (pc == 0x1c90) {
+ // If we get to the place where a character has been read,
+ // clear out the pending keyboard character.
         char_pending = 0x15;
     }
 }
 
 void handle_kb() {
     char ch;
+    int len;
+    uint16_t addr;
+    FILE *loadfile;
 
     ch = getchar();
 
@@ -199,6 +269,8 @@ void handle_kb() {
     } else if (ch == 18) {
         printf("RESET\n");
         reset6502();
+    } else if (ch == 20) {
+        do_step();
     } else if (ch == 0x1b) {
         if (single_step) {
             printf("Single step OFF\n");
@@ -211,6 +283,44 @@ void handle_kb() {
         single_step = 1;
     } else if (ch == 3) {
         exit(0);
+    } else if (ch == 'l') {
+        reset_term();
+        printf("Enter filename: ");
+        fgets(input_line, sizeof(input_line)-1, stdin);
+        len = strlen(input_line);
+        if ((len > 0) && (input_line[len-1] == '\n')) {
+            input_line[len-1] = 0;
+        }
+        printf("Enter load address: ");
+        addr = 0;
+        for (;;) {
+            ch = getchar();
+            if ((ch >= '0') && (ch <= '9')) {
+                addr = ((addr << 4) | (ch - '0')) & 0xffff;
+            } else if ((ch >= 'a') && (ch <= 'f')) {
+                addr = ((addr << 4) | (ch - 'a' + 10)) & 0xffff;
+            } else if ((ch >= 'A') && (ch <= 'F')) {
+                addr = ((addr << 4) | (ch - 'A' + 10)) & 0xffff;
+            } else if ((ch == '\n') || (ch == '\r')) {
+                break;
+            }
+        }
+        if (addr >= 0x400) {
+            printf("Load address is not in RAM");
+            kbhit(true);
+            return;
+        }
+        if ((loadfile = fopen(input_line, "rb")) == NULL) {
+            printf("Unable to open file %s\n", input_line);
+            kbhit(true);
+            return;
+        }
+        fread(&ram[addr], 1, 0x400-addr, loadfile);
+        printf("File loaded at %04x\n", addr);
+        fflush(stdout);
+        kbhit(true);
+        reset6502();
+        return;
     } else {
         if (ch >= 0x20) {
             printf("Unknown char %c\n", ch);
@@ -222,7 +332,7 @@ void handle_kb() {
 
 char display_map[128] = {
 /*              0    1    2    3    4    5    6    7    8    9    a    b    c    d    e    f */
-/* 0x00 */    '~', '~', '~', '>', 'i', '~', '1', '7', '~', '~', '~', '~', '~', '~', '~', '~', 
+/* 0x00 */    ' ', '~', '~', '>', 'i', '~', '1', '7', '~', '~', '~', '~', '~', '~', '~', '~', 
 /* 0x10 */    '~', '~', '~', '~', '~', '~', '~', '~', '~', '~', '~', '~', 'w', '~', '~', '~', 
 /* 0x20 */    '~', '~', '~', '~', '~', '~', '~', '~', '~', '~', '~', '~', '~', '~', '~', '~', 
 /* 0x30 */    '~', '~', '~', '~', '~', '~', '~', 'm', 'l', 'c', '~', '~', '~', 'g', 'u', '0', 
@@ -268,6 +378,8 @@ uint8_t read6502(uint16_t address) {
         return riot003read(address);
     } else if ((address >= 0x1740) && (address < 0x1780)) {
         return riot002read(address);
+    } else if ((address >= 0x9c00) && (address < 0xa000)) {
+        return riot002.ram[address - 0x9c00];
     } else {
         return 0;
     }
@@ -285,7 +397,7 @@ void write6502(uint16_t address, uint8_t value) {
     } else if ((address >= 0x1740) && (address < 0x1780)) {
         riot002write(address, value);
     } else {
-        printf("Write %08x to %x\n", value, address);
+        printf("Write %02x to %04x\n", value, address);
     }
 }
 
@@ -299,15 +411,16 @@ uint8_t riot003read(uint16_t address) {
     } else if (address == 0x1703) {
         return riot003.pbdd;
     } else if ((address == 0x1706) || (address == 0x170e)) {
-        if (riot002.timer.timeout) {
-            riot002.timer.timeout = 0;
-            riot002.timer.timer_count = 255;
+        if (riot003.timer.timeout) {
+            reset_timer(&riot003.timer, riot003.timer.timer_mult, riot003.timer.start_value);
+            riot003.timer.timeout = 0;
+            riot003.timer.timer_count = 255;
             return 0;
         } else {
-            return riot002.timer.timer_count;
+            return riot003.timer.timer_count;
         }
     } else if (address == 0x1707) {
-        if (riot002.timer.timeout) {
+        if (riot003.timer.timeout) {
             return 0x80;
         } else {
             return 0;
@@ -352,8 +465,7 @@ uint8_t riot002read(uint16_t address) {
         return riot002.pbdd;
     } else if ((address == 0x1746) || (address == 0x174e)) {
         if (riot002.timer.timeout) {
-            riot002.timer.timeout = 0;
-            riot002.timer.timer_count = 255;
+            reset_timer(&riot002.timer, riot002.timer.timer_mult, riot002.timer.start_value);
             return 0;
         } else {
             return riot002.timer.timer_count;
@@ -387,19 +499,19 @@ void riot003write(uint16_t address, uint8_t value) {
             break;
 
         case 0x1704:
-            reset_timer(&riot003.timer, 1);
+            reset_timer(&riot003.timer, 1, value);
             break;
 
         case 0x1705:
-            reset_timer(&riot003.timer, 8);
+            reset_timer(&riot003.timer, 8, value);
             break;
 
         case 0x1706:
-            reset_timer(&riot003.timer, 64);
+            reset_timer(&riot003.timer, 64, value);
             break;
 
         case 0x1707:
-            reset_timer(&riot003.timer, 1024);
+            reset_timer(&riot003.timer, 1024, value);
             break;
     }
 }
@@ -423,27 +535,54 @@ void riot002write(uint16_t address, uint8_t value) {
             break;
 
         case 0x1744:
-            reset_timer(&riot002.timer, 1);
+            reset_timer(&riot002.timer, 1, value);
             break;
 
         case 0x1745:
-            reset_timer(&riot002.timer, 8);
+            reset_timer(&riot002.timer, 8, value);
             break;
 
         case 0x1746:
-            reset_timer(&riot002.timer, 64);
+            reset_timer(&riot002.timer, 64, value);
             break;
 
         case 0x1747:
-            reset_timer(&riot002.timer, 1024);
+            reset_timer(&riot002.timer, 1024, value);
             break;
     }
 }
 
-void reset_timer(TIMER *timer, int scale) {
+#ifdef REAL_TIMER
+void reset_timer(TIMER *timer, int scale, uint8_t start_value) {
+    timer->timer_mult = scale;
+    timer->timeout = 0;
+    timer->start_value = start_value;
+    timer->timer_count = start_value;
+    timer->starttime = current_time_nanos();
+}
+
+/* I don't know the actual timing of the 6530, but based on the refresh
+ * speed of the Wumpus display is must be faster than 1MHz, so assume
+ * it is 2MHz here. */
+void update_timer(TIMER *timer, uint32_t ticks) {
+    uint64_t curr_time = current_time_nanos();
+    if ((timer->timer_mult == 0) || timer->timeout) {
+        return;
+    }
+    if ((curr_time -timer->starttime)/ 500 >= timer->start_value * timer->timer_mult) {
+        timer->timeout = 1;
+        timer->timer_count = 0;
+    } else {
+        timer->timer_count = timer->start_value - (curr_time - timer->starttime) / 500;
+    }
+}
+
+#else
+void reset_timer(TIMER *timer, int scale, uint8_t start_value) {
     timer->timer_mult = scale;
     timer->tick_accum = 0;
-    timer->timer_count = 255;
+    timer->start_value = start_value;
+    timer->timer_count = start_value;
     timer->timeout = 0;
 }
 
@@ -452,19 +591,23 @@ void update_timer(TIMER *timer, uint32_t ticks) {
     if (timer->timer_mult == 0) {
         return;
     }
+    if (timer->timeout) {
+        return;
+    }
     timer->tick_accum += ticks;
-    if (ticks > timer->timer_mult) {
-        num_timer_ticks = ticks / timer->timer_mult;
+    if (timer->tick_accum > timer->timer_mult) {
+        num_timer_ticks = timer->tick_accum / timer->timer_mult;
         if (timer->timer_mult == 1) {
             timer->tick_accum = 0;
         } else {
-            timer->tick_accum = ticks % timer->timer_mult;
+            timer->tick_accum = timer->tick_accum % timer->timer_mult;
         }
         if (num_timer_ticks >= timer->timer_count) {
             timer->timer_count = 0;
-            timer->timeout = 0;
+            timer->timeout = 1;
         } else {
             timer->timer_count -= num_timer_ticks;
         }
     }
 }
+#endif
