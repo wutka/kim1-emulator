@@ -12,18 +12,19 @@ but adds the ability to load a binary file into memory. Unlike the
 KIM-UNO, this emulator does not yet have built-in ROM programs.
 
 ## Keyboard commands
-
-  ctrl-a    - switch to address mode
-  ctrl-d    - switch to data mode
-  0-9, a-f  - enter a hex digit either into the address or data window
-  ctrl-p    - display program counter
-  ctrl-t    - step
-  ctrl-r    - reset
-  ctrl-g    - go (execute)
-  ctrl-[    - enter single-step mode
-  ctrl-]    - exit single-step mode
-  +         - go to the next memory location
-  l         - load a program, you are prompted for the filename and load address
+`
+ctrl-a    - switch to address mode
+ctrl-d    - switch to data mode
+0-9, a-f  - enter a hex digit either into the address or data window
+ctrl-p    - display program counter
+ctrl-t    - step
+ctrl-r    - reset
+ctrl-g    - go (execute)
+ctrl-[    - enter single-step mode
+ctrl-]    - exit single-step mode
+\+         - go to the next memory location
+l         - load a program, you are prompted for the filename and load address
+`
 
 ## Display
 The display mimics the KIM-1 display, which has a set of 4 7-segment LED displays that
