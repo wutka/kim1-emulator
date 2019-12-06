@@ -19,7 +19,7 @@ but adds the ability to load a binary file into memory. Unlike the
 KIM-UNO, this emulator does not yet have built-in ROM programs.
 Here's a shot of the wumpus game in action - the command-line interface
 is a little ugly, but it works.
-![Image of Wumpus game](https://github.com/wutka/kim1-emulator/img/wumpus.png)
+![Image of Wumpus game](https://github.com/wutka/kim1-emulator/blob/master/img/wumpus.png)
 
 ## Keyboard commands
 
