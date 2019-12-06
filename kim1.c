@@ -240,6 +240,9 @@ void check_pc() {
     }
 }
 
+/* Handle local keyboard interaction. Keys are converted to the keycodes
+ * that the KIM-1 ROM expects. They keys are made to match the ones for
+ * the KIM-UNO simulator, plus 'l' to load a binary filename. */
 void handle_kb() {
     char ch;
     int len;
@@ -330,6 +333,8 @@ void handle_kb() {
     }
 }
 
+/* The display map converts patterns of LEDs to their closest letter. It should support all
+ * the characters in the Wumpus game. */
 char display_map[128] = {
 /*              0    1    2    3    4    5    6    7    8    9    a    b    c    d    e    f */
 /* 0x00 */    ' ', '~', '~', '>', 'i', '~', '1', '7', '~', '~', '~', '~', '~', '~', '~', '~', 
@@ -351,6 +356,7 @@ char get_display_char(uint8_t dc) {
     }
     return ch;
 }
+
 void show_display() {
     printf("%c%c%c%c %c%c\n",
             get_display_char(display[5]),
@@ -361,6 +367,7 @@ void show_display() {
             get_display_char(display[0]));
 }
 
+/* Callback from the fake6502 library, handle reads from RAM or the RIOT chips */
 uint8_t read6502(uint16_t address) {
     if ((address >= 0x1c00) && (address < 0x2000)) {
         return riot002.rom[address-0x1c00];
@@ -385,6 +392,7 @@ uint8_t read6502(uint16_t address) {
     }
 }
 
+/* Callback from the fake6502 library, handle writes to RAM or the RIOT chips */
 void write6502(uint16_t address, uint8_t value) {
     if (address < 0x400) {
         ram[address] = value;
@@ -401,6 +409,7 @@ void write6502(uint16_t address, uint8_t value) {
     }
 }
 
+/* Handle reads from the 003 RIOT chip, which mostly do nothing */
 uint8_t riot003read(uint16_t address) {
     if (address == 0x1700) {
         return riot003.sad;
@@ -428,12 +437,17 @@ uint8_t riot003read(uint16_t address) {
     }
 }
 
+// key_bits holds the bit patterns for a key depressed on
+// each keyboard row (3 rows, 7 keys).
 uint8_t key_bits[7] = { 0xbf, 0xdf, 0xef, 0xf7, 0xfb, 0xfd, 0xfe };
 
 uint8_t riot002read(uint16_t address) {
     uint8_t sv;
     if (address == 0x1740) {
         sv = (riot002.sbd >> 1) & 0xf;
+        // Return the correct key_bits if the current key depressed
+        // belongs to the right scan row, otherwise 0xff, meaning
+        // nothing on that row is depressed.
         if (sv == 0) {
             if (char_pending <= 6) {
                 return key_bits[char_pending];
@@ -453,6 +467,8 @@ uint8_t riot002read(uint16_t address) {
                 return 0xff;
             }
         } else if (sv == 3) {
+            // This is a check for a serial bit, the serial interface isn't
+            // supported right now.
             return 0xff;
         } else {
             return 0x80;
