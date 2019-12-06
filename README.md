@@ -85,6 +85,7 @@ port. Since I am not emulating the serial port right now, I keep this
 bit at 1, meaning there is no incoming serial data.
 
 The keys for each row are:
+
     0  1  2  3  4  5  6
     7  8  9  a  b  c  d
     e  f  AD DA +  GO PC
