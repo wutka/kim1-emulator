@@ -22,7 +22,7 @@ KIM-UNO, this emulator does not yet have built-in ROM programs.
     ctrl-g    - go (execute)
     ctrl-[    - enter single-step mode
     ctrl-]    - exit single-step mode
-    \+         - go to the next memory location
+    +         - go to the next memory location
     l         - load a program, you are prompted for the filename and load address
 
 
