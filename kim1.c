@@ -34,6 +34,7 @@ RIOT riot002;
 extern void reset6502();
 extern void exec6502(uint32_t);
 extern void step6502();
+extern void nmi6502();
 extern volatile uint16_t pc;
 extern volatile uint8_t a, x, y, status;
 extern volatile uint32_t clockticks6502;
@@ -69,6 +70,7 @@ char input_line[512];
 int main(int argc, char *argv[]) {
     uint32_t curr_ticks;
     struct timespec tv, nsleep;
+    uint8_t enable_SST_NMI;
 
     // Initialize the RIOT chips
     memset(&riot002, 0, sizeof(RIOT));
@@ -109,14 +111,13 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        if (!single_step) {
-            do_step();
-        } else {
-            // If single stepping, sleep a bit so we don't chew up the clock,
-            // it will take a while for the user to hit the step button again
-            nsleep.tv_sec = 0;
-            nsleep.tv_nsec = 10000000;
-            nanosleep(&nsleep, NULL);
+        // This seems like a hack but it's basically how the hardware does it
+        enable_SST_NMI = single_step && (pc < 0x1c00);
+
+        do_step();
+
+        if (single_step && enable_SST_NMI) {
+            nmi6502();
         }
 
         // Check where the CPU is
@@ -233,7 +234,7 @@ void check_pc() {
             display[digit] = a;
         }
         pc = 0x1f5e;
-    } else if (pc == 0x1c90) {
+    } else if ((pc == 0x1f79) || (pc == 0x1f90)) {
  // If we get to the place where a character has been read,
  // clear out the pending keyboard character.
         char_pending = 0x15;
@@ -255,37 +256,31 @@ void handle_kb() {
         char_pending = ch - '0';
     } else if ((ch >= 'a') && (ch <= 'f')) {
         char_pending = 10 + ch - 'a';
-    } else if (ch == 1) {
+    } else if (ch == 1) {           // Ctrl-A
         printf("Address Mode\n");
         char_pending = 0x10;
-    } else if (ch == 4) {
+    } else if (ch == 4) {           // Ctrl-D
         printf("Data Mode\n");
         char_pending = 0x11;
-    } else if (ch == 16) {
+    } else if (ch == 16) {          // Ctrl-P
         printf("PC\n");
         char_pending = 0x14;
     } else if (ch == '+') {
         char_pending = 0x12;
-    } else if (ch == 7) {
+    } else if (ch == 7) {           // Ctrl-G
         printf("GO\n");
         char_pending = 0x13;
-    } else if (ch == 18) {
+    } else if (ch == 18) {          // Ctrl-R
         printf("RESET\n");
         reset6502();
-    } else if (ch == 20) {
-        do_step();
-    } else if (ch == 0x1b) {
-        if (single_step) {
-            printf("Single step OFF\n");
-        }
+    } else if (ch == 20) {          // Ctrl-T
+        nmi6502();
+    } else if (ch == 0x1b) {        // Ctrl-[
+        printf("Single step OFF\n");
         single_step = 0;
-    } else if (ch == 0x1d) {
-        if (!single_step) {
-            printf("Single step ON\n");
-        }
+    } else if (ch == 0x1d) {        // Ctrl-]
+        printf("Single step ON\n");
         single_step = 1;
-    } else if (ch == 3) {
-        exit(0);
     } else if (ch == 'l') {
         reset_term();
         printf("Enter filename: ");
@@ -577,19 +572,18 @@ void reset_timer(TIMER *timer, int scale, uint8_t start_value) {
     timer->starttime = current_time_nanos();
 }
 
-/* I don't know the actual timing of the 6530, but based on the refresh
- * speed of the Wumpus display is must be faster than 1MHz, so assume
- * it is 2MHz here. */
+// This assumes a 1-MHz clock speed for the 6530 chip
+
 void update_timer(TIMER *timer, uint32_t ticks) {
     uint64_t curr_time = current_time_nanos();
     if ((timer->timer_mult == 0) || timer->timeout) {
         return;
     }
-    if ((curr_time -timer->starttime)/ 500 >= timer->start_value * timer->timer_mult) {
+    if ((curr_time -timer->starttime)/ 1000 >= timer->start_value * timer->timer_mult) {
         timer->timeout = 1;
         timer->timer_count = 0;
     } else {
-        timer->timer_count = timer->start_value - (curr_time - timer->starttime) / 500;
+        timer->timer_count = timer->start_value - (curr_time - timer->starttime) / 1000;
     }
 }
 
@@ -602,6 +596,8 @@ void reset_timer(TIMER *timer, int scale, uint8_t start_value) {
     timer->timeout = 0;
 }
 
+// This assumes a 1-MHz clock speed for the 6530 chip (i.e. using the CPU ticks to
+// count down the timer).
 void update_timer(TIMER *timer, uint32_t ticks) {
     int num_timer_ticks;
     if (timer->timer_mult == 0) {
