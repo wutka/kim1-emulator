@@ -32,6 +32,7 @@ is a little ugly, but it works.
     ctrl-g    - go (execute)
     ctrl-[    - enter single-step mode
     ctrl-]    - exit single-step mode
+    tab       - switch to/from KIM-1 serial mode (all keystrokes go to the KIM-1)
     +         - go to the next memory location
     l         - load a program, you are prompted for the filename and load address
 
@@ -51,7 +52,7 @@ hit ctrl-g for GO.
 
 ## Emulation Info
 I have tried as much as possible to let the original KIM-1 ROM do all
-the work. There are two areas where I had to cheat a little.
+the work. There are three areas where I had to cheat a little.
 
 First, since I can only read characters and not capture keydown/keyup
 events, I need a way to signal that a key is no longer pressed. I could
@@ -70,6 +71,14 @@ I check the PC and when it gets to 1f56 in the ROM, I know that the
 accumulator has the value for the LED specified by the X register.
 Then I skip over the delay routine just for efficiency.
 
+Third, in order to let the KIM-1 read from the serial port, I look at the
+PC to see if it is at the GETCH routine. I then put the character into
+location 0xFE and jump to the end of GETCH where it knocks off the leftmost
+bit of the character and returns it. I tried to avoid this, but I couldn't
+get the timing down on the stop bit and the data bits to get the KIM-1 to
+read them. This is the one part of this that I would still have to do
+on hardware like the KIM UNO.
+
 ### Keyboard scanning
 I had a terrible time getting the keyboard scanning to work, I'm
 mainly writing this section in case someone else is trying to figure
@@ -81,8 +90,8 @@ row, and it is wired such that when a key is pressed, the SAD
 register on the 6530 has a 0 in that bit position. When a key is
 not pressed, bits 0-6 of the SAD will all be 1. Bit 7 of the SAD
 indicates whether or not there is a bit waiting from the serial
-port. Since I am not emulating the serial port right now, I keep this
-bit at 1, meaning there is no incoming serial data.
+port. This bit is 0 when there is a serial character ready for the
+KIM-1 to read.
 
 The keys for each row are:
 

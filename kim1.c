@@ -54,7 +54,6 @@ void riot002write(uint16_t, uint8_t);
 void update_timer(TIMER *, uint32_t);
 void reset_timer(TIMER *, int, uint8_t);
 void start_serial_in(uint8_t);
-void tick_serial_in(uint32_t);
 
 uint8_t read6502(uint16_t);
 void write6502(uint16_t, uint8_t);
@@ -78,11 +77,7 @@ uint8_t serial_out_bit_ready;
 
 uint8_t reading_serial;
 uint8_t serial_in_byte;
-uint8_t serial_in_count;
-uint8_t serial_in_bit;
-uint8_t serial_in_started;
-#define SERIAL_TICKS 500
-uint16_t serial_in_ticks;
+uint8_t kim1_serial_mode;
 
 uint8_t trace;
 int main(int argc, char *argv[]) {
@@ -98,6 +93,7 @@ int main(int argc, char *argv[]) {
     char_pending = 0x15;
 
     sending_serial = 0;
+    kim1_serial_mode = 0;
 
     // Load the 2 ROM files
     load_roms();
@@ -117,8 +113,6 @@ int main(int argc, char *argv[]) {
     clock_gettime(CLOCK_REALTIME, &last_tick_time);
 
     trace = 0;
-
-//    start_serial_in(0x45);
 
     for (;;) {
 
@@ -151,7 +145,7 @@ int main(int argc, char *argv[]) {
 
         // If the display has changed, update it, but no faster than every 100ms
         // since we don't need to see the result of every keystroke
-        if (display_changed) {
+        if (display_changed && !kim1_serial_mode) {
             if (current_time_millis() - display_changed_time > 100) {
                 show_display();
                 fflush(stdout);
@@ -176,8 +170,6 @@ void do_step() {
     // Update the 6530 timers
     update_timer(&riot002.timer, clockticks6502);
     update_timer(&riot003.timer, clockticks6502);
-
-    tick_serial_in(clockticks6502);
 }
 
 int kbhit(bool init) {
@@ -191,6 +183,7 @@ int kbhit(bool init) {
         tcgetattr(STDIN, &term);
         term.c_lflag &= ~ICANON;
         term.c_lflag &= ~ECHO;
+        term.c_iflag &= ~ICRNL;
         tcsetattr(STDIN, TCSANOW, &term);
         setbuf(stdin, NULL);
         initflag = true;
@@ -210,6 +203,7 @@ int reset_term() {
     tcgetattr(STDIN, &term);
     term.c_lflag |= ICANON;
     term.c_lflag |= ECHO;
+    term.c_lflag |= ICRNL;
     tcsetattr(STDIN, TCSANOW, &term);
     setbuf(stdin, NULL);
 }
@@ -266,8 +260,13 @@ void check_pc() {
  // If we get to the place where a character has been read,
  // clear out the pending keyboard character.
         char_pending = 0x15;
+    } else if (pc == 0x1e5a) {
+        if (reading_serial) {
+            pc = 0x1e85;
+            a = serial_in_byte;
+            reading_serial = 0;
+        }
     }
-
 }
 
 /* Handle local keyboard interaction. Keys are converted to the keycodes
@@ -280,6 +279,19 @@ void handle_kb() {
     FILE *loadfile;
 
     ch = getchar();
+
+    if (kim1_serial_mode) {
+        if (ch == 9) {
+            kim1_serial_mode = 0;
+            printf("Exiting KIM-1 Serial Mode\n");
+            display_changed = 1;
+        } else if (ch == 8) {
+            start_serial_in(0x7f);
+        } else {
+            start_serial_in(ch);
+        }
+        return;
+    }
 
     if ((ch >= '0') && (ch <= '9')) {
         char_pending = ch - '0';
@@ -349,9 +361,9 @@ void handle_kb() {
         kbhit(true);
         reset6502();
         return;
-    } else if (ch == 's') {
-        ch = getchar();
-        start_serial_in(ch);
+    } else if (ch == 9) {
+        kim1_serial_mode = 1;
+        printf("Entering KIM-1 Serial Mode\n");
     } else {
         if (ch >= 0x20) {
             printf("Unknown char %c\n", ch);
@@ -499,8 +511,7 @@ uint8_t riot002read(uint16_t address) {
             }
         } else if (sv == 3) {
             if (reading_serial) {
-                serial_in_started = 1;
-                return serial_in_bit;
+                return 0;
             }
             return 0xff;
         } else {
@@ -621,31 +632,6 @@ void riot002write(uint16_t address, uint8_t value) {
 void start_serial_in(uint8_t ch) {
     serial_in_byte = ch;
     reading_serial = 1;
-    serial_in_ticks = SERIAL_TICKS;
-    serial_in_count = 0;
-    serial_in_bit = 0;
-    serial_in_started = 0;
-}
-
-void tick_serial_in(uint32_t ticks) {
-    if (!reading_serial || !serial_in_started) return;
-
-    if (ticks > serial_in_ticks) {
-        serial_in_ticks = SERIAL_TICKS;
-        serial_in_count++;
-        if (serial_in_count == 1) {
-            serial_in_bit = 0x80;
-            serial_in_ticks = SERIAL_TICKS + SERIAL_TICKS / 2;
-        } else {
-            serial_in_bit = serial_in_byte & 0x80;
-            serial_in_byte = serial_in_byte << 1;
-            if (serial_in_count == 9) {
-                reading_serial = 0;
-            }
-        }
-    } else {
-        serial_in_ticks -= ticks;
-    }
 }
 
 #ifdef REAL_TIMER
