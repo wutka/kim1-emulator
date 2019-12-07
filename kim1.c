@@ -53,6 +53,10 @@ void riot003write(uint16_t, uint8_t);
 void riot002write(uint16_t, uint8_t);
 void update_timer(TIMER *, uint32_t);
 void reset_timer(TIMER *, int, uint8_t);
+void start_serial_in(uint8_t);
+void tick_serial_in(uint32_t);
+
+uint8_t read6502(uint16_t);
 void write6502(uint16_t, uint8_t);
 
 uint8_t display[6];
@@ -67,6 +71,20 @@ struct timespec last_tick_time;
 
 char input_line[512];
 
+uint8_t sending_serial;
+uint8_t serial_out_count;
+uint8_t serial_out_byte;
+uint8_t serial_out_bit_ready;
+
+uint8_t reading_serial;
+uint8_t serial_in_byte;
+uint8_t serial_in_count;
+uint8_t serial_in_bit;
+uint8_t serial_in_started;
+#define SERIAL_TICKS 500
+uint16_t serial_in_ticks;
+
+uint8_t trace;
 int main(int argc, char *argv[]) {
     uint32_t curr_ticks;
     struct timespec tv, nsleep;
@@ -78,6 +96,8 @@ int main(int argc, char *argv[]) {
 
     // No character pending
     char_pending = 0x15;
+
+    sending_serial = 0;
 
     // Load the 2 ROM files
     load_roms();
@@ -96,10 +116,16 @@ int main(int argc, char *argv[]) {
 
     clock_gettime(CLOCK_REALTIME, &last_tick_time);
 
+    trace = 0;
+
+//    start_serial_in(0x45);
+
     for (;;) {
 
 
-//        printf("pc=%04x  status=%02x  a=%02x  x=%02x  y=%02x\n", pc, status, a, x, y);
+        if (trace) {
+            printf("pc=%04x  status=%02x  a=%02x  x=%02x  y=%02x   sbd=%02x\n", pc, status, a, x, y, riot002.sbd);
+        }
 
         // Try to simulate a 1MHz clock speed
         clock_gettime(CLOCK_REALTIME, &tv);
@@ -150,6 +176,8 @@ void do_step() {
     // Update the 6530 timers
     update_timer(&riot002.timer, clockticks6502);
     update_timer(&riot003.timer, clockticks6502);
+
+    tick_serial_in(clockticks6502);
 }
 
 int kbhit(bool init) {
@@ -239,6 +267,7 @@ void check_pc() {
  // clear out the pending keyboard character.
         char_pending = 0x15;
     }
+
 }
 
 /* Handle local keyboard interaction. Keys are converted to the keycodes
@@ -264,6 +293,7 @@ void handle_kb() {
         char_pending = 0x11;
     } else if (ch == 16) {          // Ctrl-P
         printf("PC\n");
+        display_changed=1;
         char_pending = 0x14;
     } else if (ch == '+') {
         char_pending = 0x12;
@@ -319,6 +349,9 @@ void handle_kb() {
         kbhit(true);
         reset6502();
         return;
+    } else if (ch == 's') {
+        ch = getchar();
+        start_serial_in(ch);
     } else {
         if (ch >= 0x20) {
             printf("Unknown char %c\n", ch);
@@ -437,8 +470,11 @@ uint8_t riot003read(uint16_t address) {
 uint8_t key_bits[7] = { 0xbf, 0xdf, 0xef, 0xf7, 0xfb, 0xfd, 0xfe };
 
 uint8_t riot002read(uint16_t address) {
-    uint8_t sv;
+    uint8_t sv, nextval;
     if (address == 0x1740) {
+        if (reading_serial) {
+//            trace = 1;
+        }
         sv = (riot002.sbd >> 1) & 0xf;
         // Return the correct key_bits if the current key depressed
         // belongs to the right scan row, otherwise 0xff, meaning
@@ -462,8 +498,10 @@ uint8_t riot002read(uint16_t address) {
                 return 0xff;
             }
         } else if (sv == 3) {
-            // This is a check for a serial bit, the serial interface isn't
-            // supported right now.
+            if (reading_serial) {
+                serial_in_started = 1;
+                return serial_in_bit;
+            }
             return 0xff;
         } else {
             return 0x80;
@@ -471,6 +509,9 @@ uint8_t riot002read(uint16_t address) {
     } else if (address == 0x1741) {
         return riot002.padd;
     } else if (address == 0x1742) {
+        if (sending_serial) {
+            serial_out_bit_ready = 1;
+        }
         return riot002.sbd;
     } else if (address == 0x1743) {
         return riot002.pbdd;
@@ -539,6 +580,20 @@ void riot002write(uint16_t address, uint8_t value) {
 
         case 0x1742:
             riot002.sbd = value;
+            if (!sending_serial && ((value & 1) == 0)) {
+                sending_serial = 1;
+                serial_out_count = 0;
+                serial_out_byte = 0;
+                serial_out_bit_ready = 0;
+            } else if (sending_serial && serial_out_bit_ready) {
+                if (serial_out_count == 8) {
+                    printf("%c", serial_out_byte);
+                    sending_serial = 0;
+                }
+                serial_out_byte = ((serial_out_byte >> 1) & 0x7f) | ((value & 1) << 7);
+                serial_out_count++;
+                serial_out_bit_ready = 0;
+            }
             break;
 
         case 0x1743:
@@ -560,6 +615,36 @@ void riot002write(uint16_t address, uint8_t value) {
         case 0x1747:
             reset_timer(&riot002.timer, 1024, value);
             break;
+    }
+}
+
+void start_serial_in(uint8_t ch) {
+    serial_in_byte = ch;
+    reading_serial = 1;
+    serial_in_ticks = SERIAL_TICKS;
+    serial_in_count = 0;
+    serial_in_bit = 0;
+    serial_in_started = 0;
+}
+
+void tick_serial_in(uint32_t ticks) {
+    if (!reading_serial || !serial_in_started) return;
+
+    if (ticks > serial_in_ticks) {
+        serial_in_ticks = SERIAL_TICKS;
+        serial_in_count++;
+        if (serial_in_count == 1) {
+            serial_in_bit = 0x80;
+            serial_in_ticks = SERIAL_TICKS + SERIAL_TICKS / 2;
+        } else {
+            serial_in_bit = serial_in_byte & 0x80;
+            serial_in_byte = serial_in_byte << 1;
+            if (serial_in_count == 9) {
+                reading_serial = 0;
+            }
+        }
+    } else {
+        serial_in_ticks -= ticks;
     }
 }
 
