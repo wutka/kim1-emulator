@@ -203,7 +203,7 @@ int reset_term() {
     tcgetattr(STDIN, &term);
     term.c_lflag |= ICANON;
     term.c_lflag |= ECHO;
-    term.c_lflag |= ICRNL;
+    term.c_iflag |= ICRNL;
     tcsetattr(STDIN, TCSANOW, &term);
     setbuf(stdin, NULL);
 }
