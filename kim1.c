@@ -364,6 +364,9 @@ void handle_kb() {
     } else if (ch == 9) {
         kim1_serial_mode = 1;
         printf("Entering KIM-1 Serial Mode\n");
+    } else if (ch == 'x') {
+        reset_term();
+        exit(0);
     } else {
         if (ch >= 0x20) {
             printf("Unknown char %c\n", ch);
