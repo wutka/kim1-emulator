@@ -619,6 +619,7 @@ void riot002write(uint16_t address, uint8_t value) {
             } else if (sending_serial && serial_out_bit_ready) {
                 if (serial_out_count == 8) {
                     printf("%c", serial_out_byte);
+                    fflush(stdout);
                     sending_serial = 0;
                 }
                 serial_out_byte = ((serial_out_byte >> 1) & 0x7f) | ((value & 1) << 7);
