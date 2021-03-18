@@ -6,8 +6,9 @@
 #include <stdbool.h>
 #include <time.h>
 #include <memory.h>
+#include <ctype.h>
 
-uint8_t ram[1024];
+uint8_t ram[7168];
 
 typedef struct TIMER {
     uint16_t timer_mult;
@@ -77,10 +78,12 @@ uint8_t serial_out_bit_ready;
 uint8_t serial_in_byte;
 uint8_t kim1_serial_mode;
 
-#define SERIAL_IN_QUEUE_SIZE 256
+#define SERIAL_IN_QUEUE_SIZE 1024
 uint8_t serial_in_queue[SERIAL_IN_QUEUE_SIZE];
 int serial_in_queue_start = 0;
 int serial_in_queue_end = 0;
+
+int max_ram = 1024;
 
 uint8_t trace;
 int main(int argc, char *argv[]) {
@@ -88,6 +91,29 @@ int main(int argc, char *argv[]) {
     struct timespec tv, nsleep;
     uint8_t enable_SST_NMI;
 
+    for (int i=1; i < argc; i++) {
+        if (!strcmp(argv[i], "-ram") || !strcmp(argv[i], "--ram")) {
+            if (i >= argc-1) {
+                printf("Must specify ram size (1k,2k,3k,4k,5k)\n");
+                exit(1);
+            }
+            if (isdigit(argv[i+1][0]) && (argv[i+1][1] == 'k' || (argv[i+1][1] == 'K'))) {
+                int ram_size = argv[i+1][0] - '0';
+                if ((ram_size < 1) || (ram_size > 5)) {
+                    printf("Ram size must be between 1k and 5k\n");
+                    exit(1);
+                }
+                max_ram = 1024 * ram_size;
+            }
+            i++;
+        } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "-help") ||
+            !strcmp(argv[i], "--h") || !strcmp(argv[i], "--help")) {
+            printf("Usage:  kim1 [-ram size]\n  where size = 1k, 2k, 3k, 4k, or 5k\n");
+            printf("\nThe ram size currently specifies the amount of memory available below\n");
+            printf("the ROM. The ROM starts at 17E7, which is just below 6K, so for now\n");
+            printf("it is limited to 5k, leaving about 1000 bytes unavailable.\n");
+        }
+    }
     // Initialize the RIOT chips
     memset(&riot002, 0, sizeof(RIOT));
     memset(&riot003, 0, sizeof(RIOT));
@@ -365,7 +391,7 @@ void handle_kb() {
                 break;
             }
         }
-        if (addr >= 0x400) {
+        if (addr >= max_ram) {
             printf("Load address is not in RAM");
             kbhit(true);
             return;
@@ -375,7 +401,7 @@ void handle_kb() {
             kbhit(true);
             return;
         }
-        fread(&ram[addr], 1, 0x400-addr, loadfile);
+        fread(&ram[addr], 1, max_ram-addr, loadfile);
         printf("File loaded at %04x\n", addr);
         fflush(stdout);
         kbhit(true);
@@ -436,7 +462,7 @@ uint8_t read6502(uint16_t address) {
         return riot002.rom[address-0x1c00];
     } else if ((address >= 0x1800) && (address < 0x1c00)) {
         return riot003.rom[address-0x1800];
-    } else if (address < 0x400) {
+    } else if (address < max_ram) {
         return ram[address];
     } else if (address >= 0xff00) {
         return riot002.rom[address - 0xfc00];
@@ -457,7 +483,7 @@ uint8_t read6502(uint16_t address) {
 
 /* Callback from the fake6502 library, handle writes to RAM or the RIOT chips */
 void write6502(uint16_t address, uint8_t value) {
-    if (address < 0x400) {
+    if (address < max_ram) {
         ram[address] = value;
     } else if ((address >= 0x1780) && (address < 0x17c0)) {
         riot003.ram[address - 0x1780] = value;
