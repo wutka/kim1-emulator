@@ -112,6 +112,7 @@ int main(int argc, char *argv[]) {
             printf("\nThe ram size currently specifies the amount of memory available below\n");
             printf("the ROM. The ROM starts at 17E7, which is just below 6K, so for now\n");
             printf("it is limited to 5k, leaving about 1000 bytes unavailable.\n");
+            exit(0);
         }
     }
     // Initialize the RIOT chips
