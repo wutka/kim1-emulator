@@ -53,7 +53,6 @@ void riot003write(uint16_t, uint8_t);
 void riot002write(uint16_t, uint8_t);
 void update_timer(TIMER *, uint32_t);
 void reset_timer(TIMER *, int, uint8_t);
-void start_serial_in(uint8_t);
 
 uint8_t read6502(uint16_t);
 void write6502(uint16_t, uint8_t);
@@ -75,9 +74,13 @@ uint8_t serial_out_count;
 uint8_t serial_out_byte;
 uint8_t serial_out_bit_ready;
 
-uint8_t reading_serial;
 uint8_t serial_in_byte;
 uint8_t kim1_serial_mode;
+
+#define SERIAL_IN_QUEUE_SIZE 256
+uint8_t serial_in_queue[SERIAL_IN_QUEUE_SIZE];
+int serial_in_queue_start = 0;
+int serial_in_queue_end = 0;
 
 uint8_t trace;
 int main(int argc, char *argv[]) {
@@ -158,6 +161,23 @@ int main(int argc, char *argv[]) {
             handle_kb();
         }
     }
+}
+
+int serial_in_queue_ready() {
+    return serial_in_queue_start != serial_in_queue_end;
+}
+
+void serial_in_queue_put(uint8_t b) {
+    serial_in_queue[serial_in_queue_end] = b;
+    serial_in_queue_end = (serial_in_queue_end + 1) % SERIAL_IN_QUEUE_SIZE;
+}
+
+uint8_t serial_in_queue_get() {
+    uint8_t b;
+    if (serial_in_queue_start == serial_in_queue_end) return 0;
+    b = serial_in_queue[serial_in_queue_start];
+    serial_in_queue_start = (serial_in_queue_start + 1) % SERIAL_IN_QUEUE_SIZE;
+    return b;
 }
 
 void do_step() {
@@ -261,10 +281,10 @@ void check_pc() {
  // clear out the pending keyboard character.
         char_pending = 0x15;
     } else if (pc == 0x1e5a) {
-        if (reading_serial) {
+        if (serial_in_queue_ready()) {
             pc = 0x1e85;
-            a = serial_in_byte;
-            reading_serial = 0;
+            a = serial_in_queue_get();
+            y = 0xff;
         }
     }
 }
@@ -286,9 +306,9 @@ void handle_kb() {
             printf("Exiting KIM-1 Serial Mode\n");
             display_changed = 1;
         } else if (ch == 8) {
-            start_serial_in(0x7f);
+            serial_in_queue_put(0x7f);
         } else {
-            start_serial_in(ch);
+            serial_in_queue_put(ch);
         }
         return;
     }
@@ -487,9 +507,6 @@ uint8_t key_bits[7] = { 0xbf, 0xdf, 0xef, 0xf7, 0xfb, 0xfd, 0xfe };
 uint8_t riot002read(uint16_t address) {
     uint8_t sv, nextval;
     if (address == 0x1740) {
-        if (reading_serial) {
-//            trace = 1;
-        }
         sv = (riot002.sbd >> 1) & 0xf;
         // Return the correct key_bits if the current key depressed
         // belongs to the right scan row, otherwise 0xff, meaning
@@ -513,7 +530,7 @@ uint8_t riot002read(uint16_t address) {
                 return 0xff;
             }
         } else if (sv == 3) {
-            if (reading_serial) {
+            if (kim1_serial_mode) {
                 return 0;
             }
             return 0xff;
@@ -630,11 +647,6 @@ void riot002write(uint16_t address, uint8_t value) {
             reset_timer(&riot002.timer, 1024, value);
             break;
     }
-}
-
-void start_serial_in(uint8_t ch) {
-    serial_in_byte = ch;
-    reading_serial = 1;
 }
 
 #ifdef REAL_TIMER
