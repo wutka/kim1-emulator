@@ -432,7 +432,7 @@ void check_pc() {
 void handle_kb() {
     char ch;
     int len;
-    uint16_t addr;
+    uint16_t addr, save_len;
     FILE *loadfile;
 
     ch = getchar();
@@ -504,6 +504,7 @@ void handle_kb() {
         }
         if (addr >= max_ram) {
             printf("Load address is not in RAM");
+            fflush(stdout);
             kbhit(true);
             return;
         }
@@ -512,11 +513,65 @@ void handle_kb() {
             kbhit(true);
             return;
         }
-        fread(&ram[addr], 1, max_ram-addr, loadfile);
-        printf("File loaded at %04x\n", addr);
+        len = fread(&ram[addr], 1, max_ram-addr, loadfile);
+        fclose(loadfile);
+        printf("%04x (%d) bytes loaded from %s at %04x\n", len, len, input_line, addr);
         fflush(stdout);
         kbhit(true);
         reset6502();
+        return;
+    } else if (ch == 's') {
+        reset_term();
+        printf("Enter filename to save to: ");
+        fgets(input_line, sizeof(input_line)-1, stdin);
+        len = strlen(input_line);
+        if ((len > 0) && (input_line[len-1] == '\n')) {
+            input_line[len-1] = 0;
+        }
+        printf("Enter starting address: ");
+        addr = 0;
+        for (;;) {
+            ch = getchar();
+            if ((ch >= '0') && (ch <= '9')) {
+                addr = ((addr << 4) | (ch - '0')) & 0xffff;
+            } else if ((ch >= 'a') && (ch <= 'f')) {
+                addr = ((addr << 4) | (ch - 'a' + 10)) & 0xffff;
+            } else if ((ch >= 'A') && (ch <= 'F')) {
+                addr = ((addr << 4) | (ch - 'A' + 10)) & 0xffff;
+            } else if ((ch == '\n') || (ch == '\r')) {
+                break;
+            }
+        }
+        printf("Enter # bytes to save in hex: ");
+        save_len = 0;
+        for (;;) {
+            ch = getchar();
+            if ((ch >= '0') && (ch <= '9')) {
+                save_len = ((save_len << 4) | (ch - '0')) & 0xffff;
+            } else if ((ch >= 'a') && (ch <= 'f')) {
+                save_len = ((save_len << 4) | (ch - 'a' + 10)) & 0xffff;
+            } else if ((ch >= 'A') && (ch <= 'F')) {
+                save_len = ((save_len << 4) | (ch - 'A' + 10)) & 0xffff;
+            } else if ((ch == '\n') || (ch == '\r')) {
+                break;
+            }
+        }
+        if ((loadfile = fopen(input_line, "wb")) == NULL) {
+            printf("Unable to open file %s\n", input_line);
+            fflush(stdout);
+            kbhit(true);
+            return;
+        }
+        if (addr + save_len > max_ram) {
+            printf("Can't save past top of RAM, saving up to %04x\n", max_ram);
+            fflush(stdout);
+            save_len = max_ram - addr;
+        }
+        len = fwrite(&ram[addr], 1, save_len, loadfile);
+        fclose(loadfile);
+        printf("%04x (%d) bytes saved to %s\n", len, len, input_line);
+        fflush(stdout);
+        kbhit(true);
         return;
     } else if (ch == 9) {
         kim1_serial_mode = 1;

@@ -35,6 +35,7 @@ is a little ugly, but it works.
     tab       - switch to/from KIM-1 serial mode (all keystrokes go to the KIM-1)
     +         - go to the next memory location
     l         - load a program, you are prompted for the filename and load address
+    s         - saves RAM to a file, you are prompted for filename, addr, and size
 
 ## Command-line options
 The KIM-1 originally came with 1K of RAM. It is fairly easy to add RAM to the
@@ -66,6 +67,18 @@ hex value.
 
 To run a program, set the address to the beginning of the program and
 hit ctrl-g for GO.
+
+## Paper Tape
+The KIM-1 serial mode emulates a terminal hooked to the KIM-1 via the
+serial port. The KIM-1 has the ability to load and save files in a
+paper tape format via the serial port. While you could just cut&paste
+this data into the serial port, it might not be completely reliable.
+The input buffer has a limited size and if you paste too large a file,
+it would overrun the buffer.
+
+Instead, when the emulator detects that you are trying to load or save
+a paper tape, it prompts you for a filename to read from or write to.
+If you still want to use cut&paste, just enter `-` for the filename.
 
 ## Emulation Info
 I have tried as much as possible to let the original KIM-1 ROM do all
