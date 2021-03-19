@@ -40,11 +40,11 @@ is a little ugly, but it works.
 ## Command-line options
 The KIM-1 originally came with 1K of RAM. It is fairly easy to add RAM to the
 simulation, at least up to the bottom of the ROM. Above the ROM, everything is
-available except for the range 9C00-0xA000. When the system boots and it jumps
+available except for the range 9C00-A000. When the system boots and it jumps
 to the ROM, the address it jumps to is in this range. On the original KIM-1 this
 wasn't a problem because the additional address lines weren't used on the built-in
-RAM, they were only used on the expansion bus (as far as I can tell from the
-wiring diagrams.
+ROM, they were only used on the expansion bus (as far as I can tell from the
+wiring diagrams).
 
 Use the `-ram size` option where size is 1k, 2k, 3k, 4k, 5k or full.
 A size of full opens up the full 64K as RAM except for the ROM addresses and the
