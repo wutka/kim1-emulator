@@ -7,8 +7,9 @@
 #include <time.h>
 #include <memory.h>
 #include <ctype.h>
+#include <unistd.h>
 
-uint8_t ram[7168];
+uint8_t ram[65536];
 
 typedef struct TIMER {
     uint16_t timer_mult;
@@ -54,6 +55,7 @@ void riot003write(uint16_t, uint8_t);
 void riot002write(uint16_t, uint8_t);
 void update_timer(TIMER *, uint32_t);
 void reset_timer(TIMER *, int, uint8_t);
+void read_string(char *, int);
 
 uint8_t read6502(uint16_t);
 void write6502(uint16_t, uint8_t);
@@ -85,6 +87,12 @@ int serial_in_queue_end = 0;
 
 int max_ram = 1024;
 
+char paper_tape_filename[1024];
+FILE *paper_tape_file = NULL;
+int auto_tape = 1;
+int reading_paper_tape = 0;
+int writing_paper_tape = 0;
+
 uint8_t trace;
 int main(int argc, char *argv[]) {
     uint32_t curr_ticks;
@@ -94,10 +102,12 @@ int main(int argc, char *argv[]) {
     for (int i=1; i < argc; i++) {
         if (!strcmp(argv[i], "-ram") || !strcmp(argv[i], "--ram")) {
             if (i >= argc-1) {
-                printf("Must specify ram size (1k,2k,3k,4k,5k)\n");
+                printf("Must specify ram size (1k,2k,3k,4k,5k or full)\n");
                 exit(1);
             }
-            if (isdigit(argv[i+1][0]) && (argv[i+1][1] == 'k' || (argv[i+1][1] == 'K'))) {
+            if (!strcmp(argv[i+1], "full")) {
+                max_ram = 65536;
+            } else if (isdigit(argv[i+1][0]) && (argv[i+1][1] == 'k' || (argv[i+1][1] == 'K'))) {
                 int ram_size = argv[i+1][0] - '0';
                 if ((ram_size < 1) || (ram_size > 5)) {
                     printf("Ram size must be between 1k and 5k\n");
@@ -108,11 +118,28 @@ int main(int argc, char *argv[]) {
             i++;
         } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "-help") ||
             !strcmp(argv[i], "--h") || !strcmp(argv[i], "--help")) {
-            printf("Usage:  kim1 [-ram size]\n  where size = 1k, 2k, 3k, 4k, or 5k\n");
+            printf("Usage:  kim1 [-ram size] [-autotape y/n]\n  where size = 1k, 2k, 3k, 4k, or 5k\n");
             printf("\nThe ram size currently specifies the amount of memory available below\n");
             printf("the ROM. The ROM starts at 17E7, which is just below 6K, so for now\n");
             printf("it is limited to 5k, leaving about 1000 bytes unavailable.\n");
+            printf("The autotape option controls whether the emulator prompts you for a\n");
+            printf("filename when you load or save a paper tape. For the save, do the\n");
+            printf("normal routine of putting the length at 17F7-F8, and jumping to the\n");
+            printf("start address, it will prompt for a save filename when you hit Q.\n");
             exit(0);
+        } else if (!strcmp(argv[i], "-autotape")) {
+            if (i >= argc-1) {
+                printf("Must specify y or n for autotape\n");
+                exit(1);
+            }
+            if ((argv[i+1][0] == 'y') || (argv[i+1][0] == 'Y')) {
+                auto_tape = 1;
+            } else if ((argv[i+1][0] == 'n') || (argv[i+1][0] == 'N')) {
+                auto_tape = 0;
+            } else {
+                printf("Must specify y or n for autotape\n");
+                exit(1);
+            }
         }
     }
     // Initialize the RIOT chips
@@ -219,20 +246,26 @@ void do_step() {
     update_timer(&riot003.timer, clockticks6502);
 }
 
+void set_raw() {
+    static const int STDIN = 0;
+
+    // Use termios to turn off line buffering
+    struct termios term;
+    tcgetattr(STDIN, &term);
+    term.c_lflag &= ~ICANON;
+    term.c_lflag &= ~ECHO;
+    term.c_iflag &= ~ICRNL;
+    tcsetattr(STDIN, TCSANOW, &term);
+    setbuf(stdin, NULL);
+}
+
 int kbhit(bool init) {
     static bool initflag = false;
     static const int STDIN = 0;
 
     // If raw mode hasn't been turned on yet, turn it on
     if (init || !initflag) {
-        // Use termios to turn off line buffering
-        struct termios term;
-        tcgetattr(STDIN, &term);
-        term.c_lflag &= ~ICANON;
-        term.c_lflag &= ~ECHO;
-        term.c_iflag &= ~ICRNL;
-        tcsetattr(STDIN, TCSANOW, &term);
-        setbuf(stdin, NULL);
+        set_raw();
         initflag = true;
     }
 
@@ -292,7 +325,9 @@ void load_roms() {
  * processing so programs like Wumpus that display non-standard
  * values can still work. */
 void check_pc() {
-    int digit;
+    int digit, n, tap_ch;
+    char ch;
+    char *filename;
     if (pc == 0x1f56) {
         digit = 9 - (x >> 1);
         if (display[digit] != a) {
@@ -312,6 +347,81 @@ void check_pc() {
             pc = 0x1e85;
             a = serial_in_queue_get();
             y = 0xff;
+        } else if (reading_paper_tape) {
+            if ((tap_ch = fgetc(paper_tape_file)) != EOF) {
+                pc = 0x1e85;
+                a = (uint8_t) tap_ch;
+                y = 0xff;
+            } else {
+                fclose(paper_tape_file);
+                reading_paper_tape = 0;
+                printf("Tape loaded.\n");
+            }
+        }
+    } else if (pc == 0x1e04) {
+        if (!auto_tape) {
+            return;
+        }
+        reset_term();
+        for (;;) {
+            printf("Read from file: ");
+            fflush(stdout);
+            n = read(0, paper_tape_filename, sizeof(paper_tape_filename)-1);
+            while ((n > 0) && ((paper_tape_filename[n-1] == 10) || (paper_tape_filename[n-1] == 13))) {
+                paper_tape_filename[--n] = 0;
+            }
+            if (n <= 0) {
+                pc = 0x1c6a;
+                break;
+            }
+            paper_tape_filename[n] = 0;
+            if (!strcmp(paper_tape_filename, "-")) {
+                break;
+            }
+            if (strlen(paper_tape_filename) > 0) {
+                paper_tape_file = fopen(paper_tape_filename, "r");
+                if (paper_tape_file == NULL) {
+                    perror("fopen");
+                    fflush(stderr);
+                    continue;
+                }
+                reading_paper_tape = 1;
+            }
+            break;
+        }
+        set_raw();
+    } else if (pc == 0x1e01) {
+        reset_term();
+        for (;;) {
+            printf("Write to file: ");
+            fflush(stdout);
+            n = read(0, paper_tape_filename, sizeof(paper_tape_filename)-1);
+            while ((n > 0) && ((paper_tape_filename[n-1] == 10) || (paper_tape_filename[n-1] == 13))) {
+                paper_tape_filename[--n] = 0;
+            }
+            if (n <= 0) {
+                pc = 0x1c6a;
+                break;
+            }
+            paper_tape_filename[n] = 0;
+            if (!strcmp(paper_tape_filename, "-")) break;
+            if (strlen(paper_tape_filename) > 0) {
+                paper_tape_file = fopen(paper_tape_filename, "w");
+                if (paper_tape_file == NULL) {
+                    perror("fopen");
+                    fflush(stderr);
+                    continue;
+                }
+                writing_paper_tape = 1;
+            }
+            break;
+        }
+        set_raw();
+    } else if (pc == 0x1d77) {
+        if (writing_paper_tape) {
+            printf("Tape saved.\n");
+            fclose(paper_tape_file);
+            writing_paper_tape = 0;
         }
     }
 }
@@ -463,8 +573,8 @@ uint8_t read6502(uint16_t address) {
         return riot002.rom[address-0x1c00];
     } else if ((address >= 0x1800) && (address < 0x1c00)) {
         return riot003.rom[address-0x1800];
-    } else if (address < max_ram) {
-        return ram[address];
+    } else if ((address >= 0x9c00) && (address < 0xa000)) {
+        return riot002.ram[address - 0x9c00];
     } else if (address >= 0xff00) {
         return riot002.rom[address - 0xfc00];
     } else if ((address >= 0x1780) && (address < 0x17c0)) {
@@ -475,8 +585,8 @@ uint8_t read6502(uint16_t address) {
         return riot003read(address);
     } else if ((address >= 0x1740) && (address < 0x1780)) {
         return riot002read(address);
-    } else if ((address >= 0x9c00) && (address < 0xa000)) {
-        return riot002.ram[address - 0x9c00];
+    } else if (address < max_ram) {
+        return ram[address];
     } else {
         return 0;
     }
@@ -484,9 +594,7 @@ uint8_t read6502(uint16_t address) {
 
 /* Callback from the fake6502 library, handle writes to RAM or the RIOT chips */
 void write6502(uint16_t address, uint8_t value) {
-    if (address < max_ram) {
-        ram[address] = value;
-    } else if ((address >= 0x1780) && (address < 0x17c0)) {
+    if ((address >= 0x1780) && (address < 0x17c0)) {
         riot003.ram[address - 0x1780] = value;
     } else if ((address >= 0x17c0) && (address < 0x1800)) {
         riot002.ram[address - 0x17c0] = value;
@@ -494,6 +602,8 @@ void write6502(uint16_t address, uint8_t value) {
         riot003write(address, value);
     } else if ((address >= 0x1740) && (address < 0x1780)) {
         riot002write(address, value);
+    } else if (address < max_ram) {
+        ram[address] = value;
     } else {
         printf("Write %02x to %04x\n", value, address);
     }
@@ -645,8 +755,14 @@ void riot002write(uint16_t address, uint8_t value) {
                 serial_out_bit_ready = 0;
             } else if (sending_serial && serial_out_bit_ready) {
                 if (serial_out_count == 8) {
-                    printf("%c", serial_out_byte);
-                    fflush(stdout);
+                    if (writing_paper_tape) {
+                        if (serial_out_byte != 0) {
+                            fwrite(&serial_out_byte, 1, 1, paper_tape_file);
+                        }
+                    } else {
+                        printf("%c", serial_out_byte);
+                        fflush(stdout);
+                    }
                     sending_serial = 0;
                 }
                 serial_out_byte = ((serial_out_byte >> 1) & 0x7f) | ((value & 1) << 7);
