@@ -106,10 +106,10 @@
 #include <stdint.h>
 
 //6502 defines
-#define UNDOCUMENTED //when this is defined, undocumented opcodes are handled.
+#undef UNDOCUMENTED //when this is defined, undocumented opcodes are handled.
                      //otherwise, they're simply treated as NOPs.
 
-#define NES_CPU      //when this is defined, the binary-coded decimal (BCD)
+#undef NES_CPU      //when this is defined, the binary-coded decimal (BCD)
                      //status flag is not honored by ADC and SBC. the 2A03
                      //CPU in the Nintendo Entertainment System does not
                      //support BCD operation.
@@ -332,11 +332,11 @@ static void adc() {
     if (status & FLAG_DECIMAL) {
         clearcarry();
         
-        if ((a & 0x0F) > 0x09) {
-            a += 0x06;
+        if ((result & 0x0F) > 0x09) {
+            result += 0x06;
         }
-        if ((a & 0xF0) > 0x90) {
-            a += 0x60;
+        if ((result & 0xF0) > 0x90) {
+            result += 0x60;
             setcarry();
         }
         
@@ -705,12 +705,12 @@ static void sbc() {
     if (status & FLAG_DECIMAL) {
         clearcarry();
         
-        a -= 0x66;
-        if ((a & 0x0F) > 0x09) {
-            a += 0x06;
+        result -= 0x66;
+        if ((result & 0x0F) > 0x09) {
+            result += 0x06;
         }
-        if ((a & 0xF0) > 0x90) {
-            a += 0x60;
+        if ((result & 0xF0) > 0x90) {
+            result += 0x60;
             setcarry();
         }
         
